@@ -113,21 +113,52 @@
       // GitHub Pages: Web.data is stored as 10 MB parts (too big to push in one piece).
       // Download them, join them into one file in memory, and hand that to Unity.
       var dataParts = 9;
+      var dataBytes = 81937306;
       var progressBar = document.querySelector("#unity-progress-bar-full");
-      function loadDataParts() {
-        var done = 0;
-        var parts = [];
-        for (var i = 0; i < dataParts; i++) {
-          parts.push(fetch(buildUrl + "/Web.data.part" + i).then((r) => {
-            if (!r.ok) throw new Error("Could not download " + r.url + " (" + r.status + ")");
-            return r.arrayBuffer();
-          }).then((buf) => {
-            done++;
-            progressBar.style.width = 50 * done / dataParts + "%";
-            return buf;
-          }));
+      var loadStatus = document.createElement("div");
+      loadStatus.style.cssText = "color:#ccc;font:13px sans-serif;text-align:center;margin-top:8px;white-space:nowrap";
+      document.querySelector("#unity-loading-bar").appendChild(loadStatus);
+
+      var received = [];
+      function showProgress() {
+        var got = received.reduce((a, b) => a + b, 0);
+        progressBar.style.width = 80 * got / dataBytes + "%";
+        loadStatus.textContent = "Downloading game data  " + (got / 1e6).toFixed(0) + " / " + (dataBytes / 1e6).toFixed(0) + " MB";
+      }
+
+      // One part, read chunk by chunk so the bar moves; retried if the connection drops.
+      async function loadPart(i) {
+        for (var attempt = 1; ; attempt++) {
+          received[i] = 0;
+          try {
+            var r = await fetch(buildUrl + "/Web.data.part" + i, { cache: "no-cache" });
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            var reader = r.body.getReader();
+            var chunks = [];
+            for (;;) {
+              var c = await reader.read();
+              if (c.done) break;
+              chunks.push(c.value);
+              received[i] += c.value.length;
+              showProgress();
+            }
+            return new Blob(chunks);
+          } catch (e) {
+            if (attempt >= 4) throw new Error("Could not download game data part " + i + " (" + e.message + "). Check your internet and reload the page.");
+            await new Promise((res) => setTimeout(res, 1500 * attempt));
+          }
         }
-        return Promise.all(parts).then((bufs) => URL.createObjectURL(new Blob(bufs)));
+      }
+
+      // Three parts at a time, then join them into one file in memory.
+      async function loadDataParts() {
+        var blobs = new Array(dataParts);
+        var next = 0;
+        async function worker() { while (next < dataParts) { var i = next++; blobs[i] = await loadPart(i); } }
+        showProgress();
+        await Promise.all([worker(), worker(), worker()]);
+        loadStatus.textContent = "Starting the game...";
+        return URL.createObjectURL(new Blob(blobs));
       }
       // The joined file gets a new address every visit, so don't save copies of it in the browser cache.
       config.cacheControl = () => "no-store";
@@ -138,7 +169,7 @@
         loadDataParts().then((dataBlobUrl) => {
           config.dataUrl = dataBlobUrl;
           return createUnityInstance(canvas, config, (progress) => {
-            progressBar.style.width = 50 + 50 * progress + "%";
+            progressBar.style.width = 80 + 20 * progress + "%";
           });
         }).then((unityInstance) => {
                 document.querySelector("#unity-loading-bar").style.display = "none";
