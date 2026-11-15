@@ -110,12 +110,37 @@
 
       document.querySelector("#unity-loading-bar").style.display = "block";
 
+      // GitHub Pages: Web.data is stored as 10 MB parts (too big to push in one piece).
+      // Download them, join them into one file in memory, and hand that to Unity.
+      var dataParts = 9;
+      var progressBar = document.querySelector("#unity-progress-bar-full");
+      function loadDataParts() {
+        var done = 0;
+        var parts = [];
+        for (var i = 0; i < dataParts; i++) {
+          parts.push(fetch(buildUrl + "/Web.data.part" + i).then((r) => {
+            if (!r.ok) throw new Error("Could not download " + r.url + " (" + r.status + ")");
+            return r.arrayBuffer();
+          }).then((buf) => {
+            done++;
+            progressBar.style.width = 50 * done / dataParts + "%";
+            return buf;
+          }));
+        }
+        return Promise.all(parts).then((bufs) => URL.createObjectURL(new Blob(bufs)));
+      }
+      // The joined file gets a new address every visit, so don't save copies of it in the browser cache.
+      config.cacheControl = () => "no-store";
+
       var script = document.createElement("script");
       script.src = loaderUrl;
       script.onload = () => {
-        createUnityInstance(canvas, config, (progress) => {
-          document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
-              }).then((unityInstance) => {
+        loadDataParts().then((dataBlobUrl) => {
+          config.dataUrl = dataBlobUrl;
+          return createUnityInstance(canvas, config, (progress) => {
+            progressBar.style.width = 50 + 50 * progress + "%";
+          });
+        }).then((unityInstance) => {
                 document.querySelector("#unity-loading-bar").style.display = "none";
                 document.querySelector("#unity-fullscreen-button").onclick = () => {
                   unityInstance.SetFullscreen(1);
